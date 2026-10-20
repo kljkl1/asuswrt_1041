@@ -1,0 +1,47 @@
+
+name: Inspect SR1041ZT Source
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check environment
+        run: |
+          echo "=== Revision ==="
+          git rev-parse HEAD
+          echo "=== Disk ==="
+          df -h
+          echo "=== Memory ==="
+          free -h
+          echo "=== CPU ==="
+          nproc
+
+      - name: Locate TUF AX3000 V2 files
+        shell: bash
+        run: |
+          find release -type f \
+            -name 'TUF_AX3000_V2.dts' -print
+
+          echo "=== Source directories ==="
+          find release -maxdepth 3 \
+            -type d | head -100
+
+      - name: Locate build documentation
+        shell: bash
+        run: |
+          find . -maxdepth 4 \
+            \( -name 'README*' \
+            -o -name 'DEV.md' \
+            -o -name 'target.mak' \) \
+            -type f -print | head -200
