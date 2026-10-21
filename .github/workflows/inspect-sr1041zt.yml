@@ -35,7 +35,7 @@ jobs:
 
           echo "=== Source directories ==="
           find release -maxdepth 3 \
-            -type d | head -100
+            -type d -print | sed -n '1,100p'
 
       - name: Locate build documentation
         shell: bash
