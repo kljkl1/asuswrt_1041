@@ -1,0 +1,58 @@
+name: Test BCM6756 Build Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    container:
+      image: gnuton/asuswrt-merlin-toolchains-docker:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect GNUton toolchain environment
+        shell: bash
+        run: |
+          set -eu
+
+          echo "===== 1. Container identity ====="
+          id
+          pwd
+
+          echo "===== 2. Environment script ====="
+          if [ -f /home/docker/envs/bcm-hnd-ax-4.19.sh ]; then
+            echo "Environment script exists"
+          else
+            echo "ERROR: Environment script not found"
+          fi
+
+          echo "===== 3. Toolchain directory ====="
+          if [ -d /home/docker/am-toolchains/brcm-arm-hnd ]; then
+            ls -la /home/docker/am-toolchains/brcm-arm-hnd
+          else
+            echo "ERROR: Toolchain directory not found"
+          fi
+
+          echo "===== 4. Load build environment ====="
+          if [ -f /home/docker/envs/bcm-hnd-ax-4.19.sh ]; then
+            source /home/docker/envs/bcm-hnd-ax-4.19.sh
+          else
+            exit 1
+          fi
+
+          echo "===== 5. Link toolchain ====="
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+
+          echo "===== 6. Find ARM compiler ====="
+          find /opt/toolchains -type f -name 'arm-buildroot-linux-gnueabi-gcc' -print
+
+          echo "===== 7. Check source tree ====="
+          test -f release/src-rt-5.04axhnd.675x/Makefile
+          test -f release/src-rt/target.mak
+          grep -n 'TUF-AX3000_V2_CHIP_PROFILE' \
+            release/src-rt-5.04axhnd.675x/chip_profile.mak || true
+
+          echo "===== Environment inspection complete ====="
