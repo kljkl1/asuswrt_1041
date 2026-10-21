@@ -19,6 +19,9 @@ jobs:
         run: |
           set -eo pipefail
 
+          # Allow Git to inspect the repository inside the GitHub Actions container.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
           export LD_LIBRARY="${LD_LIBRARY:-}"
           source /home/docker/envs/bcm-hnd-ax-4.19.sh
 
