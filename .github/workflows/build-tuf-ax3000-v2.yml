@@ -1,11 +1,17 @@
+```yaml
 name: Build TUF-AX3000 V2 Reference Firmware
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
     container:
       image: gnuton/asuswrt-merlin-toolchains-docker:latest
       options: --user 0:0
@@ -19,7 +25,6 @@ jobs:
         run: |
           set -eo pipefail
 
-          # Allow Git to inspect the repository inside the GitHub Actions container.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           export LD_LIBRARY="${LD_LIBRARY:-}"
@@ -28,27 +33,88 @@ jobs:
           ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
 
           echo "===== Compiler ====="
-          command -v arm-buildroot-linux-gnueabi-gcc || true
-          /opt/toolchains/crosstools-arm-gcc-9.2-linux-4.19-glibc-2.30-binutils-2.32/bin/arm-buildroot-linux-gnueabi-gcc --version
+          command -v arm-buildroot-linux-gnueabi-gcc
+          arm-buildroot-linux-gnueabi-gcc --version
+
+          echo "===== Disk space ====="
+          df -h
+
+          echo "===== CPU count ====="
+          nproc
 
           echo "===== Source revision ====="
-          git rev-parse HEAD
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD
 
-          echo "===== SDK Makefile ====="
-          test -f release/src-rt-5.04axhnd.675x/Makefile
+          test -f "$GITHUB_WORKSPACE/release/src-rt/Makefile"
+          test -f "$GITHUB_WORKSPACE/release/src-rt/target.mak"
 
-          echo "===== Reference target configuration ====="
-          grep -n -A 8 -B 3 'TUF-AX3000_V2' release/src-rt/target.mak
-
-      - name: Inspect build targets before compiling
+      - name: Build TUF-AX3000 V2
         shell: bash
         run: |
           set -eo pipefail
 
-          echo "===== Root Makefile target references ====="
-          grep -n -E 'TUF-AX3000_V2|BUILD_NAME|MODEL' release/src-rt/Makefile release/src-rt/platform.mak release/src-rt/target.mak | head -n 160
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
 
-          echo "===== SDK build Makefile target references ====="
-          grep -n -E 'TUF-AX3000_V2|BUILD_NAME|MODEL' release/src-rt-5.04axhnd.675x/build/Makefile | head -n 160
+          cd "$GITHUB_WORKSPACE/release/src-rt"
 
-          echo "===== Build target inspection complete ====="
+          set +e
+          make -j2 TUF-AX3000_V2 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+
+          echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
+
+          if [ "$build_status" -ne 0 ]; then
+            echo "Build failed with exit code $build_status"
+            exit "$build_status"
+          fi
+
+          echo "===== Build command completed successfully ====="
+
+      - name: Collect firmware artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/build-artifacts"
+
+          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
+            cp "$GITHUB_WORKSPACE/build.log" \
+              "$GITHUB_WORKSPACE/build-artifacts/"
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/build-exit-code.txt" ]; then
+            cp "$GITHUB_WORKSPACE/build-exit-code.txt" \
+              "$GITHUB_WORKSPACE/build-artifacts/"
+          fi
+
+          cd "$GITHUB_WORKSPACE"
+
+          find release -type f \
+            \( -iname '*.w' \
+            -o -iname '*.trx' \
+            -o -iname '*.pkgtb' \
+            -o -iname '*.ubi' \
+            -o -iname '*.dtb' \) \
+            -print0 |
+          while IFS= read -r -d '' file; do
+            mkdir -p "build-artifacts/$(dirname "$file")"
+            cp -f "$file" "build-artifacts/$file"
+          done
+
+          echo "===== Collected files ====="
+          find build-artifacts -type f -printf '%p (%s bytes)\n' || true
+
+      - name: Upload build logs and firmware candidates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuf-ax3000-v2-build-results
+          path: build-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+```
+
