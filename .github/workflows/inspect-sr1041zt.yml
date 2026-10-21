@@ -45,3 +45,63 @@ jobs:
             -o -name 'DEV.md' \
             -o -name 'target.mak' \) \
             -type f -print | head -200
+
+      - name: Inspect build entry, toolchain and image rules
+        shell: bash
+        run: |
+          set -eu
+
+          SRC="release/src-rt-5.04axhnd.675x"
+
+          echo "===== 1. BUILD ENTRY FILES ====="
+          for f in \
+            release/src/Makefile \
+            release/src-rt/target.mak \
+            "$SRC/Makefile" \
+            "$SRC/platform.mak" \
+            "$SRC/platform.mk"
+          do
+            if [ -f "$f" ]; then
+              echo "FOUND: $f"
+              wc -l "$f"
+            else
+              echo "NOT FOUND: $f"
+            fi
+          done
+
+          echo "===== 2. MAKEFILES AND BUILD SCRIPTS ====="
+          find "$SRC" -maxdepth 3 -type f \
+            \( -name 'Makefile' \
+            -o -name 'makefile' \
+            -o -name 'platform.mak' \
+            -o -name 'platform.mk' \
+            -o -name 'target.mak' \
+            -o -name 'build*.sh' \
+            -o -name '*image*.sh' \) \
+            -print | sort | sed -n '1,180p'
+
+          echo "===== 3. MODEL AND NAND RELATED VARIABLES ====="
+          grep -nE \
+            'TUF-AX3000_V2|BUILD_NAME|NVSIZE|LINUX_MTD|UBI=|UBIFS=|NAND|MTD|PROFILE=' \
+            release/src-rt/target.mak || true
+
+          echo "===== 4. TOOLCHAIN DIRECTORIES ====="
+          find "$SRC" -maxdepth 3 -type d \
+            \( -iname '*toolchain*' -o -iname '*crosstool*' \) \
+            -print | sort
+
+          echo "===== 5. IMAGE AND FILESYSTEM COMMANDS ====="
+          grep -RInE \
+            'ubinize|mkfs\.ubifs|mksquashfs|fwtag|VMLINUX|image/' \
+            "$SRC/Makefile" "$SRC/platform.mak" "$SRC/platform.mk" \
+            "$SRC/Makefile" \
+            release/src/Makefile release/src-rt/target.mak \
+            2>/dev/null | sed -n '1,180p' || true
+
+          echo "===== 6. IMAGE OUTPUT DIRECTORY ====="
+          if [ -d "$SRC/image" ]; then
+            find "$SRC/image" -maxdepth 2 -type f \
+              -printf '%p (%s bytes)\n' | sed -n '1,100p'
+          else
+            echo "Image directory does not exist yet."
+          fi
