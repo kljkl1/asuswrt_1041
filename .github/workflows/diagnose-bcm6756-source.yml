@@ -1,0 +1,94 @@
+name: Diagnose BCM6756 Source Layout
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    container:
+      image: gnuton/asuswrt-merlin-toolchains-docker:latest
+      options: --user 0:0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect source layout
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p diagnostics
+
+          {
+            echo "===== Source revision ====="
+            git rev-parse HEAD
+
+            echo
+            echo "===== Git submodules ====="
+            git submodule status || true
+
+            echo
+            echo "===== Main source directories ====="
+            for p in \
+              release/src-rt \
+              release/src-rt-5.04axhnd.675x \
+              release/src-rt/targets \
+              release/src-rt/targets/96756GW \
+              release/src-rt/bcmdrivers \
+              release/src-rt/bcmdrivers/broadcom/net/wl \
+              release/src-rt-5.04axhnd.675x/targets \
+              release/src-rt-5.04axhnd.675x/bcmdrivers/broadcom/net/wl
+            do
+              echo
+              echo "--- $p ---"
+
+              if [ -e "$p" ] || [ -L "$p" ]; then
+                ls -ld "$p"
+                readlink "$p" || true
+                readlink -f "$p" || true
+              else
+                echo "MISSING"
+              fi
+            done
+
+            echo
+            echo "===== Symlinks under release/src-rt ====="
+            find release/src-rt -maxdepth 3 -type l -ls \
+              2>/dev/null || true
+
+            echo
+            echo "===== Directories named targets ====="
+            find release -maxdepth 6 -type d -name targets \
+              -print 2>/dev/null || true
+
+            echo
+            echo "===== Wireless driver directories ====="
+            find release -maxdepth 9 -type d \
+              -path '*/bcmdrivers/broadcom/net/wl' \
+              -print 2>/dev/null || true
+
+            echo
+            echo "===== Makefile setup around bin target ====="
+            sed -n '6035,6090p' release/src-rt/Makefile
+
+            echo
+            echo "===== Diagnostic complete ====="
+          } 2>&1 | tee diagnostics/source-layout.txt
+
+      - name: Upload source diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcm6756-source-diagnostics
+          path: diagnostics/source-layout.txt
+          if-no-files-found: warn
+          retention-days: 7
