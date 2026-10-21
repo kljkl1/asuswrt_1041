@@ -17,7 +17,7 @@ jobs:
       - name: Inspect GNUton toolchain environment
         shell: bash
         run: |
-          set -eu
+          set -eo pipefail
 
           echo "===== 1. Container identity ====="
           id
@@ -28,6 +28,7 @@ jobs:
             echo "Environment script exists"
           else
             echo "ERROR: Environment script not found"
+            exit 1
           fi
 
           echo "===== 3. Toolchain directory ====="
@@ -35,24 +36,65 @@ jobs:
             ls -la /home/docker/am-toolchains/brcm-arm-hnd
           else
             echo "ERROR: Toolchain directory not found"
-          fi
-
-          echo "===== 4. Load build environment ====="
-          if [ -f /home/docker/envs/bcm-hnd-ax-4.19.sh ]; then
-            source /home/docker/envs/bcm-hnd-ax-4.19.sh
-          else
             exit 1
           fi
 
-          echo "===== 5. Link toolchain ====="
+          echo "===== 4. Initialize environment and load build environment ====="
+          # The GNUton environment script may reference LD_LIBRARY before assigning it.
+          # Initialize it first so Bash does not fail on an unset variable.
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
+
+          echo "===== 5. Display compiler environment ====="
+          echo "PATH=${PATH}"
+          echo "LD_LIBRARY=${LD_LIBRARY:-<empty>}"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<empty>}"
+
+          echo "===== 6. Link toolchain ====="
           ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+          ls -ld /opt/toolchains
 
-          echo "===== 6. Find ARM compiler ====="
-          find /opt/toolchains -type f -name 'arm-buildroot-linux-gnueabi-gcc' -print
+          echo "===== 7. Find ARM compiler ====="
+          COMPILER_PATH=""
 
-          echo "===== 7. Check source tree ====="
-          test -f release/src-rt-5.04axhnd.675x/Makefile
-          test -f release/src-rt/target.mak
+          if [ -x /opt/toolchains/usr/bin/arm-buildroot-linux-gnueabi-gcc ]; then
+            COMPILER_PATH="/opt/toolchains/usr/bin/arm-buildroot-linux-gnueabi-gcc"
+          elif [ -x /home/docker/am-toolchains/brcm-arm-hnd/usr/bin/arm-buildroot-linux-gnueabi-gcc ]; then
+            COMPILER_PATH="/home/docker/am-toolchains/brcm-arm-hnd/usr/bin/arm-buildroot-linux-gnueabi-gcc"
+          else
+            echo "Searching toolchain directories for the compiler..."
+            COMPILER_PATH="$(find -L /opt/toolchains /home/docker/am-toolchains/brcm-arm-hnd \
+              -type f -name 'arm-buildroot-linux-gnueabi-gcc' -print -quit 2>/dev/null || true)"
+          fi
+
+          if [ -n "${COMPILER_PATH}" ] && [ -x "${COMPILER_PATH}" ]; then
+            echo "ARM compiler found: ${COMPILER_PATH}"
+            "${COMPILER_PATH}" --version | head -n 2
+          else
+            echo "ERROR: arm-buildroot-linux-gnueabi-gcc was not found or is not executable"
+            echo "Searching for possible compiler binaries:"
+            find -L /home/docker/am-toolchains/brcm-arm-hnd \
+              -type f \( -name '*gnueabi*gcc' -o -name 'gcc' \) \
+              -print 2>/dev/null | head -n 50 || true
+            exit 1
+          fi
+
+          echo "===== 8. Check source tree ====="
+          if [ -f release/src-rt-5.04axhnd.675x/Makefile ]; then
+            echo "SDK Makefile exists"
+          else
+            echo "ERROR: release/src-rt-5.04axhnd.675x/Makefile not found"
+            exit 1
+          fi
+
+          if [ -f release/src-rt/target.mak ]; then
+            echo "Target configuration exists"
+          else
+            echo "ERROR: release/src-rt/target.mak not found"
+            exit 1
+          fi
+
           grep -n 'TUF-AX3000_V2_CHIP_PROFILE' \
             release/src-rt-5.04axhnd.675x/chip_profile.mak || true
 
