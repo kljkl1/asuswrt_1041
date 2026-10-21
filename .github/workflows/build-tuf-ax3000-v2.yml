@@ -1,0 +1,51 @@
+name: Build TUF-AX3000 V2 Reference Firmware
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: gnuton/asuswrt-merlin-toolchains-docker:latest
+      options: --user 0:0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare GNUton build environment
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
+
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+
+          echo "===== Compiler ====="
+          command -v arm-buildroot-linux-gnueabi-gcc || true
+          /opt/toolchains/crosstools-arm-gcc-9.2-linux-4.19-glibc-2.30-binutils-2.32/bin/arm-buildroot-linux-gnueabi-gcc --version
+
+          echo "===== Source revision ====="
+          git rev-parse HEAD
+
+          echo "===== SDK Makefile ====="
+          test -f release/src-rt-5.04axhnd.675x/Makefile
+
+          echo "===== Reference target configuration ====="
+          grep -n -A 8 -B 3 'TUF-AX3000_V2' release/src-rt/target.mak
+
+      - name: Inspect build targets before compiling
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          echo "===== Root Makefile target references ====="
+          grep -n -E 'TUF-AX3000_V2|BUILD_NAME|MODEL' release/src-rt/Makefile release/src-rt/platform.mak release/src-rt/target.mak | head -n 160
+
+          echo "===== SDK build Makefile target references ====="
+          grep -n -E 'TUF-AX3000_V2|BUILD_NAME|MODEL' release/src-rt-5.04axhnd.675x/build/Makefile | head -n 160
+
+          echo "===== Build target inspection complete ====="
