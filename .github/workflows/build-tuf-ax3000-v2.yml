@@ -1,71 +1,117 @@
-      - name: Diagnose missing build directories
+name: Build TUF-AX3000 V2 Reference Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    container:
+      image: gnuton/asuswrt-merlin-toolchains-docker:latest
+      options: --user 0:0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare GNUton build environment
         shell: bash
         run: |
           set -eo pipefail
 
-          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          echo "===== 1. Git submodule status ====="
-          git submodule status || true
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
 
-          echo "===== 2. Git submodule configuration ====="
-          if [ -f .gitmodules ]; then
-            cat .gitmodules
-          else
-            echo "No .gitmodules file at repository root"
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+
+          echo "===== Compiler ====="
+          command -v arm-buildroot-linux-gnueabi-gcc
+          arm-buildroot-linux-gnueabi-gcc --version
+
+          echo "===== Disk space ====="
+          df -h
+
+          echo "===== CPU count ====="
+          nproc
+
+          echo "===== Source revision ====="
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD
+
+          test -f "$GITHUB_WORKSPACE/release/src-rt/Makefile"
+          test -f "$GITHUB_WORKSPACE/release/src-rt/target.mak"
+
+      - name: Build TUF-AX3000 V2
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+
+          cd "$GITHUB_WORKSPACE/release/src-rt"
+
+          set +e
+          make -j2 TUF-AX3000_V2 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+
+          echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
+
+          if [ "$build_status" -ne 0 ]; then
+            echo "Build failed with exit code $build_status"
+            exit "$build_status"
           fi
 
-          echo "===== 3. Relevant source directories ====="
-          for dir in \
-            release/src-rt \
-            release/src-rt-5.04axhnd.675x \
-            release/src-rt/targets \
-            release/src-rt-5.04axhnd.675x/targets \
-            release/src-rt-5.04axhnd.675x/bcmdrivers \
-            release/src-rt-5.04axhnd.675x/bcmdrivers/broadcom/net/wl \
-            release/src-rt/bcmdrivers/broadcom/net/wl
-          do
-            if [ -e "$dir" ]; then
-              ls -ld "$dir"
-            else
-              echo "MISSING: $dir"
-            fi
+          echo "===== Build command completed successfully ====="
+
+      - name: Collect firmware artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/build-artifacts"
+
+          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
+            cp "$GITHUB_WORKSPACE/build.log" \
+              "$GITHUB_WORKSPACE/build-artifacts/"
+          fi
+
+          if [ -f "$GITHUB_WORKSPACE/build-exit-code.txt" ]; then
+            cp "$GITHUB_WORKSPACE/build-exit-code.txt" \
+              "$GITHUB_WORKSPACE/build-artifacts/"
+          fi
+
+          cd "$GITHUB_WORKSPACE"
+
+          find release -type f \
+            \( -iname '*.w' \
+            -o -iname '*.trx' \
+            -o -iname '*.pkgtb' \
+            -o -iname '*.ubi' \
+            -o -iname '*.dtb' \) \
+            -print0 |
+          while IFS= read -r -d '' file; do
+            mkdir -p "build-artifacts/$(dirname "$file")"
+            cp -f "$file" "build-artifacts/$file"
           done
 
-          echo "===== 4. Locate PROFILE target directories ====="
-          find release -type d \
-            \( -name '96756GW' -o -name 'targets' \) \
-            -print 2>/dev/null | head -n 150
+          echo "===== Collected files ====="
+          find build-artifacts -type f -printf '%p (%s bytes)\n' || true
 
-          echo "===== 5. Inspect source links ====="
-          for path in \
-            release/src-rt/Makefile \
-            release/src-rt/platform.mak \
-            release/src-rt-5.04axhnd.675x/Makefile \
-            release/src-rt-5.04axhnd.675x/bcmdrivers
-          do
-            if [ -L "$path" ]; then
-              echo "SYMLINK: $path -> $(readlink "$path")"
-              if [ ! -e "$path" ]; then
-                echo "BROKEN LINK: $path"
-              fi
-            elif [ -e "$path" ]; then
-              echo "EXISTS: $path"
-            else
-              echo "MISSING: $path"
-            fi
-          done
-
-          echo "===== 6. Locate Broadcom wireless driver directories ====="
-          find release -type d \
-            -path '*/bcmdrivers/broadcom/net/wl' \
-            -print 2>/dev/null | head -n 50
-
-          echo "===== 7. Relevant Makefile variables ====="
-          grep -n -E 'HND_SRC|PROFILE|BRCM_BOARD_ID|bcmdrivers/broadcom/net/wl' \
-            release/src-rt/Makefile \
-            release/src-rt/platform.mak \
-            release/src-rt/target.mak | head -n 160 || true
-
-          echo "===== Diagnostics complete; build intentionally skipped ====="
-		  
+      - name: Upload build logs and firmware candidates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuf-ax3000-v2-build-results
+          path: build-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
