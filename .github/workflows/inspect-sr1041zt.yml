@@ -105,3 +105,31 @@ jobs:
           else
             echo "Image directory does not exist yet."
           fi
+
+
+      - name: Inspect BCM6756 build prerequisites
+        shell: bash
+        run: |
+          set -u
+          cd release/src-rt-5.04axhnd.675x
+
+          echo "===== 1. Chip profile rules ====="
+          if [ -f chip_profile.mak ]; then
+            grep -nE '6756|96756|TUF-AX3000_V2|CHIP_PROFILE' chip_profile.mak || true
+          else
+            echo "chip_profile.mak not found"
+          fi
+
+          echo "===== 2. Build system and image rules ====="
+          grep -nE '^(all|bin|image|gen_target|kernel|TUF-AX3000_V2|rt-%|RT-%):|IMAGEDIR|BUILD_NAME|squashfs.pkgtb|\.w' build/Makefile Makefile 2>/dev/null | head -n 160 || true
+
+          echo "===== 3. Toolchain path ====="
+          TOOLCHAIN=/opt/toolchains/crosstools-arm-gcc-9.2-linux-4.19-glibc-2.30-binutils-2.32/usr/bin/arm-buildroot-linux-gnueabi-gcc
+          if [ -x "$TOOLCHAIN" ]; then
+            "$TOOLCHAIN" --version | head -n 2
+          else
+          echo "Expected compiler not found: $TOOLCHAIN"
+          fi
+
+          echo "===== 4. Related environment scripts ====="
+          find /home/docker/envs -maxdepth 1 -type f -name '*675*' -o -name '*hnd*' 2>/dev/null || true
