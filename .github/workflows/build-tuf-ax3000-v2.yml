@@ -47,26 +47,61 @@ jobs:
           test -f "$GITHUB_WORKSPACE/release/src-rt/Makefile"
           test -f "$GITHUB_WORKSPACE/release/src-rt/target.mak"
 
-      - name: Build TUF-AX3000-V2 as non-root
+      - name: Build TUF-AX3000 V2
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
-          echo "===== Check build user ====="
-          id docker
+          echo "===== 1. Fix workspace ownership ====="
+          chown -R docker:docker "$GITHUB_WORKSPACE"
 
-          echo "===== Check workspace permissions ====="
-          ls -ld "$GITHUB_WORKSPACE"
+          echo "===== 2. Check source files ====="
+          cd "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
 
-          echo "===== Build firmware as docker user ====="
+          ls -ld targets targets/96756GW
+          ls -l targets/96756GW/96756GW.TUF-AX3000_V2
+          ls -l release/maketargets || true
+          git -C "$GITHUB_WORKSPACE" status --short
+
+          echo "===== 3. Check build environment ====="
           su -s /bin/bash docker -c "
             set -eo pipefail
             export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
-            git config --global --add safe.directory '$GITHUB_WORKSPACE'
+            source /home/docker/envs/bcm-hnd-ax-4.19.sh
+            cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
+
+            echo '===== Current user ====='
+            id
+
+            echo '===== Target configuration ====='
+            grep -nE 'TUF-AX3000_V2|HND-96756_BASE|PROFILE=' target.mak
+            echo '===== Build target directories ====='
+            ls -ld targets/96756GW
+            echo '===== maketargets script ====='
+            ls -l release/maketargets
+            head -n 1 release/maketargets
+          "
+
+          echo "===== 4. Build firmware ====="
+          set +e
+          su -s /bin/bash docker -c "
+            set -eo pipefail
+            export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
             source /home/docker/envs/bcm-hnd-ax-4.19.sh
             cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
             make -j2 TUF-AX3000_V2 2>&1 | tee '$GITHUB_WORKSPACE/build.log'
           "
+          build_status=$?
+          set -e
+
+          echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
+
+          if [ "$build_status" -ne 0 ]; then
+            echo "Build failed with exit code $build_status"
+            exit "$build_status"
+          fi
+
+          echo "===== Build command completed successfully ====="
 
       - name: Collect firmware artifacts
         if: always()
