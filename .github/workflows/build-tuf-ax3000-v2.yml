@@ -1,5 +1,5 @@
 
-name: Diagnose TUF-AX3000 V2 Library Paths
+name: Check TUF-AX3000 V2 Library Build Rules
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare GNUton environment
+      - name: Prepare environment
         shell: bash
         run: |
           set -eo pipefail
@@ -36,20 +36,19 @@ jobs:
           command -v arm-buildroot-linux-gnueabi-gcc
           arm-buildroot-linux-gnueabi-gcc --version
 
-          echo "===== SDK directories ====="
-          ls -ld "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
-          ls -ld "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x/router-sysdep.tuf-ax3000_v2"
+          echo "===== SDK directory ====="
+          test -d "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
+          echo "SDK directory exists"
 
-      - name: Diagnose library paths
+      - name: Check library build rules
         shell: bash
         run: |
           set -eo pipefail
 
-          echo "===== Prepare workspace permissions ====="
+          echo "===== 1. Prepare workspace ====="
           chown -R docker:docker "$GITHUB_WORKSPACE"
 
-          echo "===== Create diagnostic script ====="
-          cat > /tmp/diagnose-libraries.sh <<'DIAG_SCRIPT'
+          cat > /tmp/check-library-rules.sh <<'CHECK_SCRIPT'
           #!/bin/bash
           set -eo pipefail
 
@@ -58,80 +57,91 @@ jobs:
 
           cd "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
 
-          echo "===== 1. Current directory ====="
-          pwd
-
-          echo "===== 2. Verify target profile ====="
+          echo "===== 2. Confirm target profile ====="
           grep -nE 'HND-96756_BASE|TUF-AX3000_V2' target.mak
 
-          echo "===== 3. Prepare target-specific router-sysdep ====="
-          if [ ! -d router-sysdep.tuf-ax3000_v2 ]; then
-            echo "ERROR: router-sysdep.tuf-ax3000_v2 does not exist"
-            exit 2
+          echo "===== 3. Check active NVRAM library ====="
+          if [ -f router-sysdep/wlan/nvram/prebuilt/libnvram.so ]; then
+            ls -l router-sysdep/wlan/nvram/prebuilt/libnvram.so
+            file router-sysdep/wlan/nvram/prebuilt/libnvram.so
+          else
+            echo "NVRAM library not found in active router-sysdep"
           fi
 
-          rm -rf router-sysdep
-          cp -ar router-sysdep.tuf-ax3000_v2 router-sysdep
-
-          echo "===== 4. Inspect expected linker directories ====="
-          for d in \
-            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router-sysdep/wlcsm \
-            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router-sysdep/nvram \
-            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/nvram/usr/lib \
-            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/shared \
-            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/shared/usr/lib \
+          echo "===== 4. Search NVRAM build/install rules ====="
+          grep -RInE \
+            --include='Makefile' \
+            --include='*.mak' \
+            --include='*.mk' \
+            'libnvram\.so|install/nvram/usr/lib|nvram.*prebuilt' \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router-sysdep \
             router-sysdep \
+            2>/dev/null | sed -n '1,120p' || true
+
+          echo "===== 5. Search shared library build/install rules ====="
+          grep -RInE \
+            --include='Makefile' \
+            --include='*.mak' \
+            --include='*.mk' \
+            'libshared\.so|install/shared/usr/lib|shared\.a' \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src \
+            router \
+            2>/dev/null | sed -n '1,180p' || true
+
+          echo "===== 6. Find actual shared libraries ====="
+          find bcmdrivers/broadcom/net/wl/bcm96756/main/src router \
+            \( -type f -o -type l \) \
+            \( -name 'libshared.so*' -o -name 'libshared.a' \) \
+            -print 2>/dev/null | sed -n '1,120p'
+
+          echo "===== 7. Check expected installation directories ====="
+          for d in \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/nvram/usr/lib \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/shared/usr/lib \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/shared \
             router-sysdep/wlan/nvram/prebuilt
           do
             echo "----- $d -----"
             if [ -d "$d" ]; then
-              ls -la "$d" | sed -n '1,30p'
+              echo "DIRECTORY EXISTS"
+              ls -ld "$d"
             else
               echo "DIRECTORY MISSING"
             fi
           done
 
-          echo "===== 5. Locate libraries and symlinks ====="
-          find . \( -type f -o -type l \) \( \
-            -name 'libnvram.so' -o \
-            -name 'libnvram.so.*' -o \
-            -name 'libnvram.a' -o \
-            -name 'libshared.so' -o \
-            -name 'libshared.so.*' -o \
-            -name 'libshared.a' \
-          \) -print | sed -n '1,200p'
-
-          echo "===== 6. Inspect symlink targets ====="
-          find . -type l \( \
-            -name 'libnvram.so' -o \
-            -name 'libshared.so' \
-          \) -exec ls -l {} \; | sed -n '1,100p'
-
-          echo "===== Diagnostic complete; firmware build was NOT started ====="
-          DIAG_SCRIPT
-
-          chmod +x /tmp/diagnose-libraries.sh
-          chown docker:docker /tmp/diagnose-libraries.sh
-
-          echo "===== 7. Run diagnostic as non-root ====="
-          set +e
-          su -s /bin/bash docker -c \
-            'export GITHUB_WORKSPACE="'"$GITHUB_WORKSPACE"'"; bash /tmp/diagnose-libraries.sh' \
-            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-
-          diagnostic_status=${PIPESTATUS[0]}
-          set -e
-
-          echo "$diagnostic_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
-
-          if [ "$diagnostic_status" -ne 0 ]; then
-            echo "Diagnostic failed with exit code $diagnostic_status"
-            exit "$diagnostic_status"
+          echo "===== 8. Check NVRAM Makefile ====="
+          if [ -f router-sysdep/wlan/nvram/Makefile ]; then
+            sed -n '1,120p' router-sysdep/wlan/nvram/Makefile
+          else
+            echo "No Makefile at router-sysdep/wlan/nvram/Makefile"
           fi
 
-          echo "===== Diagnostic command completed successfully ====="
+          echo "===== Library rule check complete; no firmware build started ====="
+          CHECK_SCRIPT
 
-      - name: Collect diagnostic results
+          chmod +x /tmp/check-library-rules.sh
+          chown docker:docker /tmp/check-library-rules.sh
+
+          echo "===== 9. Run check as non-root ====="
+          set +e
+          su -s /bin/bash docker -c \
+            'export GITHUB_WORKSPACE="'"$GITHUB_WORKSPACE"'"; bash /tmp/check-library-rules.sh' \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+          check_status=${PIPESTATUS[0]}
+          set -e
+
+          echo "$check_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
+
+          if [ "$check_status" -ne 0 ]; then
+            echo "Library rule check failed with exit code $check_status"
+            exit "$check_status"
+          fi
+
+          echo "===== Library rule check completed successfully ====="
+
+      - name: Collect diagnostic logs
         if: always()
         shell: bash
         run: |
@@ -140,24 +150,21 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/build-artifacts"
 
           if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
-            cp "$GITHUB_WORKSPACE/build.log" \
-              "$GITHUB_WORKSPACE/build-artifacts/"
+            cp "$GITHUB_WORKSPACE/build.log" "$GITHUB_WORKSPACE/build-artifacts/"
           fi
 
           if [ -f "$GITHUB_WORKSPACE/build-exit-code.txt" ]; then
-            cp "$GITHUB_WORKSPACE/build-exit-code.txt" \
-              "$GITHUB_WORKSPACE/build-artifacts/"
+            cp "$GITHUB_WORKSPACE/build-exit-code.txt" "$GITHUB_WORKSPACE/build-artifacts/"
           fi
 
           echo "===== Collected files ====="
-          find "$GITHUB_WORKSPACE/build-artifacts" \
-            -type f -printf '%p (%s bytes)\n' || true
+          find "$GITHUB_WORKSPACE/build-artifacts" -type f -printf '%p (%s bytes)\n' || true
 
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tuf-ax3000-v2-library-diagnostics
+          name: tuf-ax3000-v2-library-rule-check
           path: build-artifacts/
           if-no-files-found: warn
           retention-days: 7
