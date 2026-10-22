@@ -47,30 +47,26 @@ jobs:
           test -f "$GITHUB_WORKSPACE/release/src-rt/Makefile"
           test -f "$GITHUB_WORKSPACE/release/src-rt/target.mak"
 
-      - name: Build TUF-AX3000 V2
+      - name: Build TUF-AX3000-V2 as non-root
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
 
-          export LD_LIBRARY="${LD_LIBRARY:-}"
-          source /home/docker/envs/bcm-hnd-ax-4.19.sh
-          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+          echo "===== Check build user ====="
+          id docker
 
-          cd "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
+          echo "===== Check workspace permissions ====="
+          ls -ld "$GITHUB_WORKSPACE"
 
-          set +e
-          make -j2 TUF-AX3000_V2 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-          build_status=${PIPESTATUS[0]}
-          set -e
-
-          echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
-
-          if [ "$build_status" -ne 0 ]; then
-            echo "Build failed with exit code $build_status"
-            exit "$build_status"
-          fi
-
-          echo "===== Build command completed successfully ====="
+          echo "===== Build firmware as docker user ====="
+          su -s /bin/bash docker -c "
+            set -eo pipefail
+            export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
+            git config --global --add safe.directory '$GITHUB_WORKSPACE'
+            source /home/docker/envs/bcm-hnd-ax-4.19.sh
+            cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
+            make -j2 TUF-AX3000_V2 2>&1 | tee '$GITHUB_WORKSPACE/build.log'
+          "
 
       - name: Collect firmware artifacts
         if: always()
