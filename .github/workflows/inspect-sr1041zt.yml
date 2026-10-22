@@ -59,8 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR" "$LOG_DIR"
-          chown -R docker:docker "$GITHUB_WORKSPACE" /github/home /home/docker 2>/dev/null || true
-          chmod -R u+rwX "$GITHUB_WORKSPACE"
+          chown -R docker:docker "$ARTIFACTS_DIR" "$LOG_DIR" 2>/dev/null || true
           echo "===== Workspace after preparation ====="
           ls -ld "$GITHUB_WORKSPACE" "$ARTIFACTS_DIR" "$LOG_DIR"
           df -h
@@ -70,6 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           {
             echo "===== Git revision ====="
