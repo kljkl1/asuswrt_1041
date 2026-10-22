@@ -89,6 +89,34 @@ jobs:
             export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
             source /home/docker/envs/bcm-hnd-ax-4.19.sh
             cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
+            echo '===== Check NVRAM and shared libraries ====='
+
+            for d in \
+              router-sysdep/nvram \
+              router-sysdep/wlcsm \
+              router/arm-glibc/install/nvram/usr/lib \
+              router/shared \
+              router/arm-glibc/install/shared/usr/lib
+            do
+              echo "----- $d -----"
+              if [ -d "$d" ]; then
+                ls -la "$d" | head -30
+              else
+                echo "DIRECTORY MISSING"
+              fi
+            done
+
+            echo '===== Find library files ====='
+            find . -type f \( \
+              -name 'libnvram.so' -o \
+              -name 'libnvram.so.*' -o \
+              -name 'libnvram.a' -o \
+              -name 'libshared.so' -o \
+              -name 'libshared.so.*' -o \
+              -name 'libshared.a' \
+            \) -print | head -100
+
+            echo '===== Start firmware build ====='
             make -j2 TUF-AX3000_V2 2>&1 | tee '$GITHUB_WORKSPACE/build.log'
           "
           build_status=$?
