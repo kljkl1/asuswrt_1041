@@ -154,6 +154,52 @@ jobs:
             df -h
           } 2>&1 | tee "$LOG_DIR/library-diagnostics.log"
 
+      - name: Diagnose workspace permissions and 9GW target
+        shell: bash
+        run: |
+          set +e
+
+          echo "===== Workspace ====="
+          id
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          ls -ld "$GITHUB_WORKSPACE"
+          stat -c '%U:%G %a %n' "$GITHUB_WORKSPACE"
+
+          echo "===== SDK permissions ====="
+          SDK="$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
+          ls -ld "$SDK"
+          stat -c '%U:%G %a %n' "$SDK"
+          ls -l "$SDK/chip_profile.tmp" "$SDK/router/chip_profile.tmp" 2>&1
+
+          echo "===== docker user ====="
+          id docker
+          su -s /bin/bash docker -c 'id; git config --global --get-all safe.directory'
+
+          echo "===== Git safety check as docker ====="
+          su -s /bin/bash docker -c \
+            "git config --global --add safe.directory '$GITHUB_WORKSPACE' &&
+             git -C '$GITHUB_WORKSPACE' rev-parse --short HEAD"
+
+          echo "===== 9GW target paths ====="
+          cd "$SDK" || exit 1
+          ls -ld targets targets/9GW 2>&1
+          find targets -maxdepth 3 \
+            \( -name '9GW.TUF-AX3000_V2' -o -name '*TUF-AX3000_V2*' \) \
+            -print 2>/dev/null | head -100
+
+          echo "===== Kernel version references ====="
+          grep -RnsE 'KERNEL_VERSION|9GW.TUF-AX3000_V2' \
+            targets/9GW make.common target.mak chip_profile.mak \
+            2>/dev/null | head -150
+
+          echo "===== Target initialization rules ====="
+          grep -RnsE 'maketargets|chip_profile.tmp|ln -s.*bcm9|targets/9GW' \
+            Makefile make.common target.mak chip_profile.mak release \
+            --include='Makefile' --include='*.mak' --include='maketargets' \
+            2>/dev/null | head -200
+
+          echo "===== Done ====="
+
       - name: Build reference target
         shell: bash
         run: |
