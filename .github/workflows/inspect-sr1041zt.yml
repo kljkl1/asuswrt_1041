@@ -54,14 +54,44 @@ jobs:
       - name: Check out this repository
         uses: actions/checkout@v4
 
-      - name: Prepare workspace permissions and output directories
+      - name: Prepare workspace permissions and Git safety
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR" "$LOG_DIR"
-          chown -R docker:docker "$ARTIFACTS_DIR" "$LOG_DIR" 2>/dev/null || true
-          echo "===== Workspace after preparation ====="
-          ls -ld "$GITHUB_WORKSPACE" "$ARTIFACTS_DIR" "$LOG_DIR"
+
+          echo "===== Before permission repair ====="
+          id
+          ls -ld "$GITHUB_WORKSPACE"
+
+          # The SDK build refuses to run as root. Make the checkout writable
+          # by the docker user that performs the build.
+          chown -R docker:docker "$GITHUB_WORKSPACE"
+          chmod -R u+rwX "$GITHUB_WORKSPACE"
+
+          # Git's safe.directory configuration is per-user. Configure it for
+          # both the current root user and the docker build user.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          su -s /bin/bash docker -c \
+            "git config --global --add safe.directory '$GITHUB_WORKSPACE'"
+
+          # Verify the generated-target helper exists and can be executed.
+          MAKETARGETS="$GITHUB_WORKSPACE/$SDK_DIR/release/maketargets"
+          if [[ ! -f "$MAKETARGETS" ]]; then
+            echo "ERROR: expected helper is missing: $MAKETARGETS"
+            exit 1
+          fi
+          chmod u+x "$MAKETARGETS"
+          chown docker:docker "$MAKETARGETS"
+
+          echo "===== Workspace after permission repair ====="
+          stat -c '%U:%G %a %n' "$GITHUB_WORKSPACE" "$ARTIFACTS_DIR" "$LOG_DIR"
+          echo "===== Build user Git safety ====="
+          su -s /bin/bash docker -c \
+            "git config --global --get-all safe.directory; git -C '$GITHUB_WORKSPACE' rev-parse --short HEAD"
+          echo "===== maketargets helper ====="
+          ls -l "$MAKETARGETS"
+          head -n 1 "$MAKETARGETS" || true
           df -h
 
       - name: Verify repository, SDK, target and toolchain
@@ -69,7 +99,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           {
             echo "===== Git revision ====="
@@ -154,52 +183,6 @@ jobs:
             df -h
           } 2>&1 | tee "$LOG_DIR/library-diagnostics.log"
 
-      - name: Diagnose workspace permissions and 9GW target
-        shell: bash
-        run: |
-          set +e
-
-          echo "===== Workspace ====="
-          id
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          ls -ld "$GITHUB_WORKSPACE"
-          stat -c '%U:%G %a %n' "$GITHUB_WORKSPACE"
-
-          echo "===== SDK permissions ====="
-          SDK="$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
-          ls -ld "$SDK"
-          stat -c '%U:%G %a %n' "$SDK"
-          ls -l "$SDK/chip_profile.tmp" "$SDK/router/chip_profile.tmp" 2>&1
-
-          echo "===== docker user ====="
-          id docker
-          su -s /bin/bash docker -c 'id; git config --global --get-all safe.directory'
-
-          echo "===== Git safety check as docker ====="
-          su -s /bin/bash docker -c \
-            "git config --global --add safe.directory '$GITHUB_WORKSPACE' &&
-             git -C '$GITHUB_WORKSPACE' rev-parse --short HEAD"
-
-          echo "===== 9GW target paths ====="
-          cd "$SDK" || exit 1
-          ls -ld targets targets/9GW 2>&1
-          find targets -maxdepth 3 \
-            \( -name '9GW.TUF-AX3000_V2' -o -name '*TUF-AX3000_V2*' \) \
-            -print 2>/dev/null | head -100
-
-          echo "===== Kernel version references ====="
-          grep -RnsE 'KERNEL_VERSION|9GW.TUF-AX3000_V2' \
-            targets/9GW make.common target.mak chip_profile.mak \
-            2>/dev/null | head -150
-
-          echo "===== Target initialization rules ====="
-          grep -RnsE 'maketargets|chip_profile.tmp|ln -s.*bcm9|targets/9GW' \
-            Makefile make.common target.mak chip_profile.mak release \
-            --include='Makefile' --include='*.mak' --include='maketargets' \
-            2>/dev/null | head -200
-
-          echo "===== Done ====="
-
       - name: Build reference target
         shell: bash
         run: |
@@ -233,7 +216,11 @@ jobs:
               else
                 echo "===== Build ====="
                 su -s /bin/bash docker -c \
-                  "cd '$GITHUB_WORKSPACE/$SDK_DIR' && source '$TOOLCHAIN_ENV' && make '$BUILD_TARGET'"
+                  "cd '$GITHUB_WORKSPACE/$SDK_DIR' && \
+                   test -w . && test -w router && \
+                   test -x ./release/maketargets && \
+                   source '$TOOLCHAIN_ENV' && \
+                   make '$BUILD_TARGET'"
                 BUILD_STATUS=$?
               fi
             else
@@ -248,8 +235,7 @@ jobs:
 
           echo "===== Build exit code: $BUILD_STATUS ====="
           echo "===== Image directory ====="
-          find image -maxdepth 2 -type f -printf '%p %s bytes
-          ' 2>/dev/null | head -300 || true
+          find image -maxdepth 2 -type f -printf '%p %s bytes\n' 2>/dev/null | head -300 || true
           echo "===== Disk after build ====="
           df -h
           date -u
