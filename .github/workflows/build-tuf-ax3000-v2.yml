@@ -77,9 +77,9 @@ jobs:
             grep -nE 'TUF-AX3000_V2|HND-96756_BASE|PROFILE=' target.mak
             echo '===== Build target directories ====='
             ls -ld targets/96756GW
-            echo '===== maketargets script ====='
-            ls -l release/maketargets
-            head -n 1 release/maketargets
+            echo "===== Locate maketargets script ====="
+            find "$GITHUB_WORKSPACE/release" -type f -name maketargets -print
+            find "$GITHUB_WORKSPACE/release" -type l -name maketargets -print
           "
 
           echo "===== 4. Build firmware ====="
