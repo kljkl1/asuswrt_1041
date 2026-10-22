@@ -85,7 +85,7 @@ jobs:
           do
             echo "----- $d -----"
             if [ -d "$d" ]; then
-              ls -la "$d" | head -30
+              ls -la "$d" | sed -n '1,30p'
             else
               echo "DIRECTORY MISSING"
             fi
@@ -99,13 +99,13 @@ jobs:
             -name 'libshared.so' -o \
             -name 'libshared.so.*' -o \
             -name 'libshared.a' \
-          \) -print | head -200
+          \) -print | sed -n '1,200p'
 
           echo "===== 6. Inspect symlink targets ====="
           find . -type l \( \
             -name 'libnvram.so' -o \
             -name 'libshared.so' \
-          \) -exec ls -l {} \; | head -100
+          \) -exec ls -l {} \; | sed -n '1,100p'
 
           echo "===== Diagnostic complete; firmware build was NOT started ====="
           DIAG_SCRIPT
