@@ -1,4 +1,5 @@
-name: Build TUF-AX3000 V2 Reference Firmware
+
+name: Diagnose TUF-AX3000 V2 Library Paths
 
 on:
   workflow_dispatch:
@@ -7,9 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
 
     container:
       image: gnuton/asuswrt-merlin-toolchains-docker:latest
@@ -19,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare GNUton build environment
+      - name: Prepare GNUton environment
         shell: bash
         run: |
           set -eo pipefail
@@ -35,32 +36,20 @@ jobs:
           command -v arm-buildroot-linux-gnueabi-gcc
           arm-buildroot-linux-gnueabi-gcc --version
 
-          echo "===== Disk space ====="
-          df -h
+          echo "===== SDK directories ====="
+          ls -ld "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
+          ls -ld "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x/router-sysdep.tuf-ax3000_v2"
 
-          echo "===== CPU count ====="
-          nproc
-
-          echo "===== Source revision ====="
-          git -C "$GITHUB_WORKSPACE" rev-parse HEAD
-
-          test -f "$GITHUB_WORKSPACE/release/src-rt/Makefile"
-          test -f "$GITHUB_WORKSPACE/release/src-rt/target.mak"
-
-      - name: Build TUF-AX3000 V2
+      - name: Diagnose library paths
         shell: bash
         run: |
           set -eo pipefail
 
-          echo "===== 1. Prepare workspace ====="
+          echo "===== Prepare workspace permissions ====="
           chown -R docker:docker "$GITHUB_WORKSPACE"
 
-          echo "===== 2. Prepare toolchain ====="
-          export LD_LIBRARY="${LD_LIBRARY:-}"
-          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
-
-          echo "===== 3. Create build script ====="
-          cat > /tmp/build-tuf-ax3000-v2.sh <<'BUILD_SCRIPT'
+          echo "===== Create diagnostic script ====="
+          cat > /tmp/diagnose-libraries.sh <<'DIAG_SCRIPT'
           #!/bin/bash
           set -eo pipefail
 
@@ -69,45 +58,80 @@ jobs:
 
           cd "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
 
-          echo "===== Verify target profile ====="
+          echo "===== 1. Current directory ====="
+          pwd
+
+          echo "===== 2. Verify target profile ====="
           grep -nE 'HND-96756_BASE|TUF-AX3000_V2' target.mak
 
-          echo "===== Check library files ====="
-          find . -type f \( \
+          echo "===== 3. Prepare target-specific router-sysdep ====="
+          if [ ! -d router-sysdep.tuf-ax3000_v2 ]; then
+            echo "ERROR: router-sysdep.tuf-ax3000_v2 does not exist"
+            exit 2
+          fi
+
+          rm -rf router-sysdep
+          cp -ar router-sysdep.tuf-ax3000_v2 router-sysdep
+
+          echo "===== 4. Inspect expected linker directories ====="
+          for d in \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router-sysdep/wlcsm \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router-sysdep/nvram \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/nvram/usr/lib \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/shared \
+            bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/shared/usr/lib \
+            router-sysdep \
+            router-sysdep/wlan/nvram/prebuilt
+          do
+            echo "----- $d -----"
+            if [ -d "$d" ]; then
+              ls -la "$d" | head -30
+            else
+              echo "DIRECTORY MISSING"
+            fi
+          done
+
+          echo "===== 5. Locate libraries and symlinks ====="
+          find . \( -type f -o -type l \) \( \
             -name 'libnvram.so' -o \
             -name 'libnvram.so.*' -o \
             -name 'libnvram.a' -o \
             -name 'libshared.so' -o \
             -name 'libshared.so.*' -o \
             -name 'libshared.a' \
-          \) -print | head -100
+          \) -print | head -200
 
-          echo "===== Start firmware build ====="
-          make -j2 TUF-AX3000_V2
-          BUILD_SCRIPT
+          echo "===== 6. Inspect symlink targets ====="
+          find . -type l \( \
+            -name 'libnvram.so' -o \
+            -name 'libshared.so' \
+          \) -exec ls -l {} \; | head -100
 
-          chmod +x /tmp/build-tuf-ax3000-v2.sh
-          chown docker:docker /tmp/build-tuf-ax3000-v2.sh
+          echo "===== Diagnostic complete; firmware build was NOT started ====="
+          DIAG_SCRIPT
 
-          echo "===== 4. Run build as non-root ====="
+          chmod +x /tmp/diagnose-libraries.sh
+          chown docker:docker /tmp/diagnose-libraries.sh
+
+          echo "===== 7. Run diagnostic as non-root ====="
           set +e
           su -s /bin/bash docker -c \
-            'export GITHUB_WORKSPACE="'"$GITHUB_WORKSPACE"'"; bash /tmp/build-tuf-ax3000-v2.sh' \
+            'export GITHUB_WORKSPACE="'"$GITHUB_WORKSPACE"'"; bash /tmp/diagnose-libraries.sh' \
             2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-          build_status=${PIPESTATUS[0]}
+          diagnostic_status=${PIPESTATUS[0]}
           set -e
 
-          echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
+          echo "$diagnostic_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
 
-          if [ "$build_status" -ne 0 ]; then
-            echo "Build failed with exit code $build_status"
-            exit "$build_status"
+          if [ "$diagnostic_status" -ne 0 ]; then
+            echo "Diagnostic failed with exit code $diagnostic_status"
+            exit "$diagnostic_status"
           fi
 
-          echo "===== Build command completed successfully ====="
+          echo "===== Diagnostic command completed successfully ====="
 
-      - name: Collect firmware artifacts
+      - name: Collect diagnostic results
         if: always()
         shell: bash
         run: |
@@ -125,28 +149,15 @@ jobs:
               "$GITHUB_WORKSPACE/build-artifacts/"
           fi
 
-          cd "$GITHUB_WORKSPACE"
-
-          find release -type f \
-            \( -iname '*.w' \
-            -o -iname '*.trx' \
-            -o -iname '*.pkgtb' \
-            -o -iname '*.ubi' \
-            -o -iname '*.dtb' \) \
-            -print0 |
-          while IFS= read -r -d '' file; do
-            mkdir -p "build-artifacts/$(dirname "$file")"
-            cp -f "$file" "build-artifacts/$file"
-          done
-
           echo "===== Collected files ====="
-          find build-artifacts -type f -printf '%p (%s bytes)\n' || true
+          find "$GITHUB_WORKSPACE/build-artifacts" \
+            -type f -printf '%p (%s bytes)\n' || true
 
-      - name: Upload build logs and firmware candidates
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tuf-ax3000-v2-build-results
+          name: tuf-ax3000-v2-library-diagnostics
           path: build-artifacts/
           if-no-files-found: warn
           retention-days: 7
