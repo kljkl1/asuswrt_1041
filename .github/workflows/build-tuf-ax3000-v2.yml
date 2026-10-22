@@ -52,74 +52,50 @@ jobs:
         run: |
           set -eo pipefail
 
-          echo "===== 1. Fix workspace ownership ====="
+          echo "===== 1. Prepare workspace ====="
           chown -R docker:docker "$GITHUB_WORKSPACE"
 
-          echo "===== 2. Check source files ====="
+          echo "===== 2. Prepare toolchain ====="
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          ln -sfn /home/docker/am-toolchains/brcm-arm-hnd /opt/toolchains
+
+          echo "===== 3. Create build script ====="
+          cat > /tmp/build-tuf-ax3000-v2.sh <<'BUILD_SCRIPT'
+          #!/bin/bash
+          set -eo pipefail
+
+          export LD_LIBRARY="${LD_LIBRARY:-}"
+          source /home/docker/envs/bcm-hnd-ax-4.19.sh
+
           cd "$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x"
 
-          ls -ld targets targets/96756GW
-          ls -l targets/96756GW/96756GW.TUF-AX3000_V2
-          ls -l release/maketargets || true
-          git -C "$GITHUB_WORKSPACE" status --short
+          echo "===== Verify target profile ====="
+          grep -nE 'HND-96756_BASE|TUF-AX3000_V2' target.mak
 
-          echo "===== 3. Check build environment ====="
-          su -s /bin/bash docker -c "
-            set -eo pipefail
-            export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
-            source /home/docker/envs/bcm-hnd-ax-4.19.sh
-            cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
+          echo "===== Check library files ====="
+          find . -type f \( \
+            -name 'libnvram.so' -o \
+            -name 'libnvram.so.*' -o \
+            -name 'libnvram.a' -o \
+            -name 'libshared.so' -o \
+            -name 'libshared.so.*' -o \
+            -name 'libshared.a' \
+          \) -print | head -100
 
-            echo '===== Current user ====='
-            id
+          echo "===== Start firmware build ====="
+          make -j2 TUF-AX3000_V2
+          BUILD_SCRIPT
 
-            echo '===== Target configuration ====='
-            grep -nE 'TUF-AX3000_V2|HND-96756_BASE|PROFILE=' target.mak
-            echo '===== Build target directories ====='
-            ls -ld targets/96756GW
-            echo "===== Locate maketargets script ====="
-            find "$GITHUB_WORKSPACE/release" -type f -name maketargets -print
-            find "$GITHUB_WORKSPACE/release" -type l -name maketargets -print
-          "
+          chmod +x /tmp/build-tuf-ax3000-v2.sh
+          chown docker:docker /tmp/build-tuf-ax3000-v2.sh
 
-          echo "===== 4. Build firmware ====="
+          echo "===== 4. Run build as non-root ====="
           set +e
-          su -s /bin/bash docker -c "
-            set -eo pipefail
-            export LD_LIBRARY=\"\${LD_LIBRARY:-}\"
-            source /home/docker/envs/bcm-hnd-ax-4.19.sh
-            cd '$GITHUB_WORKSPACE/release/src-rt-5.04axhnd.675x'
-            echo '===== Check NVRAM and shared libraries ====='
+          su -s /bin/bash docker -c \
+            'export GITHUB_WORKSPACE="'"$GITHUB_WORKSPACE"'"; bash /tmp/build-tuf-ax3000-v2.sh' \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-            for d in \
-              router-sysdep/nvram \
-              router-sysdep/wlcsm \
-              router/arm-glibc/install/nvram/usr/lib \
-              router/shared \
-              router/arm-glibc/install/shared/usr/lib
-            do
-              echo "----- $d -----"
-              if [ -d "$d" ]; then
-                ls -la "$d" | head -30
-              else
-                echo "DIRECTORY MISSING"
-              fi
-            done
-
-            echo '===== Find library files ====='
-            find . -type f \( \
-              -name 'libnvram.so' -o \
-              -name 'libnvram.so.*' -o \
-              -name 'libnvram.a' -o \
-              -name 'libshared.so' -o \
-              -name 'libshared.so.*' -o \
-              -name 'libshared.a' \
-            \) -print | head -100
-
-            echo '===== Start firmware build ====='
-            make -j2 TUF-AX3000_V2 2>&1 | tee '$GITHUB_WORKSPACE/build.log'
-          "
-          build_status=$?
+          build_status=${PIPESTATUS[0]}
           set -e
 
           echo "$build_status" > "$GITHUB_WORKSPACE/build-exit-code.txt"
