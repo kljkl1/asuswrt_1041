@@ -27,6 +27,8 @@ jobs:
       SDK_DIR: release/src-rt-5.04axhnd.675x
       BUILD_TARGET: TUF-AX3000_V2
       TOOLCHAIN_IMAGE: gnuton/asuswrt-merlin-toolchains-docker:latest-ubuntu-20_04
+      # Prevent runner-side scripts from failing under set -u if ENV_FILE is referenced before discovery.
+      ENV_FILE: ""
 
     steps:
       - name: Check out repository
