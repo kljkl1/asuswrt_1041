@@ -1,6 +1,6 @@
 name: SR1041ZT SDK Diagnose and Build
 
-run-name: "SR1041ZT SDK build and library diagnostics"
+run-name: "SR1041ZT SDK build using GNUTON toolchain container"
 
 on:
   workflow_dispatch:
@@ -20,284 +20,169 @@ concurrency:
 
 jobs:
   build-reference:
-    name: Diagnose libraries and build reference target
+    name: Inspect source and build TUF-AX3000_V2 reference target
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
-    container:
-      image: gnuton/asuswrt-merlin-toolchains-docker:latest
-      options: --user root
-
     env:
       SDK_DIR: release/src-rt-5.04axhnd.675x
       BUILD_TARGET: TUF-AX3000_V2
+      TOOLCHAIN_IMAGE: gnuton/asuswrt-merlin-toolchains-docker:latest-ubuntu-20_04
       TOOLCHAIN_ENV: /home/docker/envs/bcm-hnd-ax-4.19.sh
-      ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
-      LOG_DIR: ${{ github.workspace }}/diagnostics
 
     steps:
-      - name: Show runner and container information
-        shell: bash
-        run: |
-          set +e
-          echo "===== Identity ====="
-          id
-          echo "===== Disk ====="
-          df -h
-          echo "===== Memory ====="
-          free -h
-          echo "===== Workspace ====="
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          pwd
-          ls -la "$GITHUB_WORKSPACE"
-
-      - name: Check out this repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Prepare workspace permissions and Git safety
+      - name: Inspect checkout and source helper files
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$ARTIFACTS_DIR" "$LOG_DIR"
-
-          echo "===== Before permission repair ====="
-          id
-          ls -ld "$GITHUB_WORKSPACE"
-
-          # The SDK build refuses to run as root. Make the checkout writable
-          # by the docker user that performs the build.
-          chown -R docker:docker "$GITHUB_WORKSPACE"
-          chmod -R u+rwX "$GITHUB_WORKSPACE"
-
-          # Git's safe.directory configuration is per-user. Configure it for
-          # both the current root user and the docker build user.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          su -s /bin/bash docker -c \
-            "git config --global --add safe.directory '$GITHUB_WORKSPACE'"
-
-          # Verify the generated-target helper exists and can be executed.
-          MAKETARGETS="$GITHUB_WORKSPACE/$SDK_DIR/release/maketargets"
-          if [[ ! -f "$MAKETARGETS" ]]; then
-            echo "ERROR: expected helper is missing: $MAKETARGETS"
-            exit 1
-          fi
-          chmod u+x "$MAKETARGETS"
-          chown docker:docker "$MAKETARGETS"
-
-          echo "===== Workspace after permission repair ====="
-          stat -c '%U:%G %a %n' "$GITHUB_WORKSPACE" "$ARTIFACTS_DIR" "$LOG_DIR"
-          echo "===== Build user Git safety ====="
-          su -s /bin/bash docker -c \
-            "git config --global --get-all safe.directory; git -C '$GITHUB_WORKSPACE' rev-parse --short HEAD"
-          echo "===== maketargets helper ====="
-          ls -l "$MAKETARGETS"
-          head -n 1 "$MAKETARGETS" || true
-          df -h
-
-      - name: Verify repository, SDK, target and toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-
+          mkdir -p "$RUNNER_TEMP/sr1041zt-home" "$GITHUB_WORKSPACE/diagnostics"
           {
-            echo "===== Git revision ====="
-            git rev-parse --show-toplevel
-            git rev-parse --short HEAD
-            git status --short
-
-            echo "===== SDK directory ====="
-            if [[ ! -d "$SDK_DIR" ]]; then
-              echo "ERROR: SDK directory does not exist: $SDK_DIR"
+            echo '===== Runner identity ====='
+            id
+            echo '===== Workspace ownership ====='
+            stat -c '%U:%G %u:%g %a %n' "$GITHUB_WORKSPACE"
+            echo '===== Disk and memory ====='
+            df -h
+            free -h
+            echo '===== Git revision ====='
+            git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD
+            git -C "$GITHUB_WORKSPACE" status --short
+            echo '===== SDK path ====='
+            if [[ -d "$GITHUB_WORKSPACE/$SDK_DIR" ]]; then
+              ls -ld "$GITHUB_WORKSPACE/$SDK_DIR"
+            else
+              echo "ERROR: SDK directory missing: $SDK_DIR"
               exit 1
             fi
-            cd "$SDK_DIR"
-            pwd
-            ls -ld .
+            echo '===== All maketargets files in checkout ====='
+            find "$GITHUB_WORKSPACE" -type f -iname '*maketargets*' -print 2>/dev/null | head -200 || true
+            echo '===== Git-tracked maketargets entries ====='
+            git -C "$GITHUB_WORKSPACE" ls-files | grep -i 'maketargets' | head -200 || true
+            echo '===== SDK release directory ====='
+            ls -la "$GITHUB_WORKSPACE/$SDK_DIR/release" 2>&1 || true
+            echo '===== Target and kernel-version references ====='
+            grep -RnsE 'TUF-AX3000_V2|KERNEL_VERSION|maketargets' \
+              "$GITHUB_WORKSPACE/$SDK_DIR/Makefile" \
+              "$GITHUB_WORKSPACE/$SDK_DIR/make.common" \
+              "$GITHUB_WORKSPACE/$SDK_DIR/target.mak" \
+              "$GITHUB_WORKSPACE/$SDK_DIR/chip_profile.mak" \
+              2>/dev/null | head -240 || true
+          } 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/source-inspection.log"
 
-            echo "===== Target declarations ====="
-            grep -Rns --include='target.mak' --include='chip_profile.mak' \
-              'TUF-AX3000_V2\|HND-96756_BASE\|RT-AX58U_V2_CHIP_PROFILE' \
-              . 2>/dev/null | head -120 || true
+      - name: Pull GNUTON toolchain image
+        shell: bash
+        run: docker pull "$TOOLCHAIN_IMAGE"
 
-            echo "===== Device tree reference ====="
-            find kernel/dts/6756 -maxdepth 1 -type f \
-              -name 'TUF_AX3000_V2.dts' -print 2>/dev/null || true
-
-            echo "===== Toolchain environment file ====="
-            ls -l "$TOOLCHAIN_ENV"
-            echo "===== Toolchain location ====="
-            ls -ld /opt/toolchains /home/docker/am-toolchains/brcm-arm-hnd 2>&1 || true
-            readlink -f /opt/toolchains 2>&1 || true
-            test -x /opt/toolchains/crosstools-arm-gcc-9.2-linux-4.19-glibc-2.30-binutils-2.32/bin/arm-buildroot-linux-gnueabi-gcc \
-              && echo "Cross compiler found" \
-              || echo "Cross compiler not found at expected path"
-          } 2>&1 | tee "$LOG_DIR/environment-check.log"
-
-      - name: Diagnose NVRAM and shared libraries
+      - name: Inspect toolchain environment inside Docker
         shell: bash
         run: |
-          set +e
-          cd "$GITHUB_WORKSPACE/$SDK_DIR" || exit 1
+          set -euo pipefail
+          docker run --rm \
+            --user 0:0 \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -e SDK_DIR="$SDK_DIR" \
+            -v "$GITHUB_WORKSPACE:/build" \
+            -v "$RUNNER_TEMP/sr1041zt-home:/tmp/sr1041zt-home" \
+            -w /build \
+            "$TOOLCHAIN_IMAGE" \
+            /bin/bash -lc '
+              set -euo pipefail
+              if ! getent passwd "$HOST_UID" >/dev/null; then
+                getent group "$HOST_GID" >/dev/null || groupadd -g "$HOST_GID" sr1041zt-host
+                useradd -u "$HOST_UID" -g "$HOST_GID" -M -d "/tmp/sr1041zt-home/home-$HOST_UID" -s /bin/bash sr1041zt-host
+              fi
+              BUILD_USER="$(getent passwd "$HOST_UID" | cut -d: -f1)"
+              BUILD_HOME="/tmp/sr1041zt-home/home-$HOST_UID"
+              mkdir -p "$BUILD_HOME"
+              chown "$HOST_UID:$HOST_GID" "$BUILD_HOME"
+              echo "===== Build identity matching host checkout owner ====="
+              id "$BUILD_USER"
+              echo "===== Toolchain env file ====="
+              ls -l /home/docker/envs/bcm-hnd-ax-4.19.sh
+              echo "===== Compiler check as matching user ====="
+              su -s /bin/bash "$BUILD_USER" -c "export HOME=\"$BUILD_HOME\"; source /home/docker/envs/bcm-hnd-ax-4.19.sh; command -v arm-buildroot-linux-gnueabi-gcc; arm-buildroot-linux-gnueabi-gcc --version | head -1"
+              echo "===== Mounted workspace ====="
+              stat -c "%U:%G %u:%g %a %n" /build "/build/$SDK_DIR"
+            '
 
-          {
-            echo "===== A. Active router-sysdep ====="
-            ls -ld router-sysdep router-sysdep.tuf-ax3000_v2 2>&1
-            readlink -f router-sysdep 2>&1
-            git status --short
-
-            echo "===== B. NVRAM library candidates ====="
-            find router-sysdep.tuf-ax3000_v2 \
-                 bcmdrivers/broadcom/net/wl/bcm96756/main \
-                 -type f \( -name 'libnvram.so' -o -name 'libnvram.a' \) \
-                 -print 2>/dev/null
-
-            echo "===== C. Shared library candidates ====="
-            find router-sysdep.tuf-ax3000_v2 \
-                 bcmdrivers/broadcom/net/wl/bcm96756/main \
-                 -type f \( -name 'libshared.so' -o -name 'libshared.a' \) \
-                 -print 2>/dev/null
-
-            echo "===== D. Expected install directories ====="
-            ls -ld \
-              bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/nvram/usr/lib \
-              bcmdrivers/broadcom/net/wl/bcm96756/main/src/router/arm-glibc/install/shared/usr/lib \
-              2>&1
-
-            echo "===== E. Library build and link rules ====="
-            grep -RnsE \
-              'libnvram\.so|libnvram\.a|libshared\.so|libshared\.a|debug_monitor|dhd_monitor' \
-              router-sysdep.tuf-ax3000_v2 \
-              bcmdrivers/broadcom/net/wl/bcm96756/main/src/router \
-              --include='Makefile' --include='*.mak' --include='*.mk' \
-              2>/dev/null | head -250
-
-            echo "===== F. Active router-sysdep file candidates ====="
-            find router-sysdep -maxdepth 7 \
-              \( -name 'libnvram.so' -o -name 'libnvram.a' \
-                 -o -name 'libshared.so' -o -name 'libshared.a' \
-                 -o -name Makefile \) \
-              -print 2>/dev/null | head -250
-
-            echo "===== G. SDK and filesystem capacity ====="
-            df -h
-          } 2>&1 | tee "$LOG_DIR/library-diagnostics.log"
-
-      - name: Build reference target
+      - name: Diagnose libraries and build reference target
         shell: bash
         run: |
           set -uo pipefail
-          exec > >(tee "$LOG_DIR/build.log") 2>&1
-
-          BUILD_STATUS=0
-          cd "$GITHUB_WORKSPACE/$SDK_DIR" || BUILD_STATUS=$?
-
-          if [[ "$BUILD_STATUS" -eq 0 ]]; then
-            echo "===== Build start ====="
+          LOG="$GITHUB_WORKSPACE/diagnostics/build.log"
+          STATUS=0
+          {
+            echo '===== Build start ====='
             date -u
-            echo "Target: $BUILD_TARGET"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Revision: $GITHUB_SHA"
             echo "SDK: $SDK_DIR"
-            echo "Identity before build:"
-            id
-            echo "Disk before build:"
-            df -h
+            echo "Target: $BUILD_TARGET"
+            echo "Docker image: $TOOLCHAIN_IMAGE"
+            echo '===== Source tree checks inside container ====='
+          } | tee "$LOG"
 
-            if [[ ! -f "$TOOLCHAIN_ENV" ]]; then
-              echo "ERROR: Toolchain environment script not found: $TOOLCHAIN_ENV"
-              BUILD_STATUS=1
-            elif [[ "$(id -un)" == "root" ]]; then
-              echo "===== Toolchain environment as docker ====="
-              su -s /bin/bash docker -c \
-                "cd '$GITHUB_WORKSPACE/$SDK_DIR' && source '$TOOLCHAIN_ENV' && echo TOOLCHAIN_ENV_LOADED && command -v arm-buildroot-linux-gnueabi-gcc"
-              ENV_STATUS=$?
-              if [[ "$ENV_STATUS" -ne 0 ]]; then
-                echo "ERROR: Toolchain environment or compiler check failed."
-                BUILD_STATUS="$ENV_STATUS"
-              else
-                echo "===== Build ====="
-                su -s /bin/bash docker -c \
-                  "cd '$GITHUB_WORKSPACE/$SDK_DIR' && \
-                   test -w . && test -w router && \
-                   test -x ./release/maketargets && \
-                   source '$TOOLCHAIN_ENV' && \
-                   make '$BUILD_TARGET'"
-                BUILD_STATUS=$?
+          docker run --rm \
+            --user 0:0 \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -e SDK_DIR="$SDK_DIR" \
+            -e BUILD_TARGET="$BUILD_TARGET" \
+            -v "$GITHUB_WORKSPACE:/build" \
+            -v "$RUNNER_TEMP/sr1041zt-home:/tmp/sr1041zt-home" \
+            -w "/build/$SDK_DIR" \
+            "$TOOLCHAIN_IMAGE" \
+            /bin/bash -lc '
+              set -uo pipefail
+              exec > >(tee -a /build/diagnostics/build.log) 2>&1
+              if ! getent passwd "$HOST_UID" >/dev/null; then
+                getent group "$HOST_GID" >/dev/null || groupadd -g "$HOST_GID" sr1041zt-host
+                useradd -u "$HOST_UID" -g "$HOST_GID" -M -d "/tmp/sr1041zt-home/home-$HOST_UID" -s /bin/bash sr1041zt-host
               fi
-            else
-              echo "===== Toolchain environment ====="
-              source "$TOOLCHAIN_ENV"
-              command -v arm-buildroot-linux-gnueabi-gcc || true
-              echo "===== Build ====="
-              make "$BUILD_TARGET"
-              BUILD_STATUS=$?
-            fi
-          fi
+              BUILD_USER="$(getent passwd "$HOST_UID" | cut -d: -f1)"
+              BUILD_HOME="/tmp/sr1041zt-home/home-$HOST_UID"
+              mkdir -p "$BUILD_HOME"
+              chown "$HOST_UID:$HOST_GID" "$BUILD_HOME"
+              echo "===== Container build identity ====="
+              id "$BUILD_USER"
+              echo "===== Workspace and permissions ====="
+              pwd
+              stat -c "%U:%G %u:%g %a %n" /build "." router
+              echo "===== maketargets candidates ====="
+              find /build -type f -iname "*maketargets*" -print 2>/dev/null | head -200 || true
+              echo "===== Expected helper path ====="
+              if [[ -e ./release/maketargets ]]; then
+                ls -l ./release/maketargets
+                file ./release/maketargets || true
+              else
+                echo "NOTICE: ./release/maketargets is absent; not aborting before Makefile diagnostics."
+              fi
+              echo "===== Build as matching non-root user ====="
+              su -s /bin/bash "$BUILD_USER" -c "cd /build/$SDK_DIR && export HOME=\"$BUILD_HOME\" && source /home/docker/envs/bcm-hnd-ax-4.19.sh && command -v arm-buildroot-linux-gnueabi-gcc && make \"$BUILD_TARGET\""
+            '
+          STATUS=$?
 
-          echo "===== Build exit code: $BUILD_STATUS ====="
-          echo "===== Image directory ====="
-          find image -maxdepth 2 -type f -printf '%p %s bytes\n' 2>/dev/null | head -300 || true
-          echo "===== Disk after build ====="
-          df -h
-          date -u
+          echo "$STATUS" > "$GITHUB_WORKSPACE/diagnostics/build-exit-code.txt"
+          {
+            echo '===== Build exit code ====='
+            echo "$STATUS"
+            echo '===== Image files ====='
+            find "$GITHUB_WORKSPACE/$SDK_DIR/image" -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null | head -300 || true
+            echo '===== Runner disk after build ====='
+            df -h
+            date -u
+          } 2>&1 | tee -a "$LOG"
+          exit "$STATUS"
 
-          echo "$BUILD_STATUS" > "$LOG_DIR/build-exit-code.txt"
-          exit "$BUILD_STATUS"
-
-      - name: Collect build outputs and diagnostic summary
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          mkdir -p "$ARTIFACTS_DIR" "$LOG_DIR"
-
-          echo "===== Workflow summary =====" | tee "$LOG_DIR/summary.txt"
-          echo "Repository: $GITHUB_REPOSITORY" | tee -a "$LOG_DIR/summary.txt"
-          echo "Revision: $GITHUB_SHA" | tee -a "$LOG_DIR/summary.txt"
-          echo "Target: $BUILD_TARGET" | tee -a "$LOG_DIR/summary.txt"
-          echo "SDK: $SDK_DIR" | tee -a "$LOG_DIR/summary.txt"
-
-          if [[ -f "$LOG_DIR/build-exit-code.txt" ]]; then
-            echo "Build exit code: $(cat "$LOG_DIR/build-exit-code.txt")" \
-              | tee -a "$LOG_DIR/summary.txt"
-          else
-            echo "Build exit code file not created; build step may have failed before completion." \
-              | tee -a "$LOG_DIR/summary.txt"
-          fi
-
-          if [[ -d "$GITHUB_WORKSPACE/$SDK_DIR/image" ]]; then
-            find "$GITHUB_WORKSPACE/$SDK_DIR/image" -maxdepth 2 -type f \
-              \( -name '*.w' -o -name '*.pkgtb' -o -name '*.trx' \
-                 -o -name '*.bin' -o -name '*.img' \) \
-              -print0 2>/dev/null |
-            while IFS= read -r -d '' file; do
-              cp -n "$file" "$ARTIFACTS_DIR/" 2>/dev/null || true
-            done
-          fi
-
-          if [[ -d "$GITHUB_WORKSPACE/$SDK_DIR" ]]; then
-            find "$GITHUB_WORKSPACE/$SDK_DIR" -maxdepth 3 -type f \
-              \( -name 'build.log' -o -name 'error.log' \) \
-              -print 2>/dev/null | head -100
-          fi
-
-          echo "===== Artifact files =====" | tee -a "$LOG_DIR/summary.txt"
-          find "$ARTIFACTS_DIR" -maxdepth 2 -type f -printf '%f %s bytes\n' \
-            2>/dev/null | tee -a "$LOG_DIR/summary.txt"
-
-          echo "===== Checksums =====" | tee -a "$LOG_DIR/summary.txt"
-          find "$ARTIFACTS_DIR" -maxdepth 1 -type f -print0 2>/dev/null |
-            xargs -0 -r sha256sum | tee -a "$LOG_DIR/summary.txt"
-
-          echo "===== Final disk state =====" | tee -a "$LOG_DIR/summary.txt"
-          df -h | tee -a "$LOG_DIR/summary.txt"
-
-      - name: Upload diagnostics
+      - name: Upload diagnostics and build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sr1041zt-diagnostics-${{ github.run_number }}
-          path: |
-            diagnostics/**
-            artifacts/**
+          name: sr1041zt-build-diagnostics
           if-no-files-found: warn
-          retention-days: 14
+          path: |
+            diagnostics/
+            release/src-rt-5.04axhnd.675x/image/
