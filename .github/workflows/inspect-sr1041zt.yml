@@ -27,7 +27,6 @@ jobs:
       SDK_DIR: release/src-rt-5.04axhnd.675x
       BUILD_TARGET: TUF-AX3000_V2
       TOOLCHAIN_IMAGE: gnuton/asuswrt-merlin-toolchains-docker:latest-ubuntu-20_04
-      TOOLCHAIN_ENV: /home/docker/envs/bcm-hnd-ax-4.19.sh
 
     steps:
       - name: Check out repository
@@ -100,10 +99,19 @@ jobs:
               chown "$HOST_UID:$HOST_GID" "$BUILD_HOME"
               echo "===== Build identity matching host checkout owner ====="
               id "$BUILD_USER"
-              echo "===== Toolchain env file ====="
-              ls -l /home/docker/envs/bcm-hnd-ax-4.19.sh
-              echo "===== Compiler check as matching user ====="
-              su -s /bin/bash "$BUILD_USER" -c "export HOME=\"$BUILD_HOME\"; source /home/docker/envs/bcm-hnd-ax-4.19.sh; command -v arm-buildroot-linux-gnueabi-gcc; arm-buildroot-linux-gnueabi-gcc --version | head -1"
+              echo "===== Discover toolchain environment files ====="
+              find /home /opt /build -type f \( -name 'bcm-hnd-ax-4.19.sh' -o -name '*hnd*4.19*.sh' -o -name '*toolchain*.sh' \) -print 2>/dev/null | head -200 || true
+              echo "===== Discover compiler binaries ====="
+              find /opt /home -type f -name 'arm-buildroot-linux-gnueabi-gcc' -print 2>/dev/null | head -100 || true
+              echo "===== Compiler check using discovered environment ====="
+              ENV_FILE="$(find /home /opt -type f \( -name 'bcm-hnd-ax-4.19.sh' -o -name '*hnd*4.19*.sh' -o -name '*toolchain*.sh' \) -print -quit 2>/dev/null || true)"
+              if [[ -n "$ENV_FILE" ]]; then
+                echo "Using environment: $ENV_FILE"
+                su -s /bin/bash "$BUILD_USER" -c "export HOME=\"$BUILD_HOME\"; source '$ENV_FILE'; command -v arm-buildroot-linux-gnueabi-gcc; arm-buildroot-linux-gnueabi-gcc --version | head -1"
+              else
+                echo "NOTICE: no matching toolchain environment script found; listing common environment directories"
+                ls -la /home/docker /home/docker/envs /opt/toolchains 2>&1 || true
+              fi
               echo "===== Mounted workspace ====="
               stat -c "%U:%G %u:%g %a %n" /build "/build/$SDK_DIR"
             '
@@ -160,8 +168,18 @@ jobs:
               else
                 echo "NOTICE: ./release/maketargets is absent; not aborting before Makefile diagnostics."
               fi
-              echo "===== Build as matching non-root user ====="
-              su -s /bin/bash "$BUILD_USER" -c "cd /build/$SDK_DIR && export HOME=\"$BUILD_HOME\" && source /home/docker/envs/bcm-hnd-ax-4.19.sh && command -v arm-buildroot-linux-gnueabi-gcc && make \"$BUILD_TARGET\""
+              echo "===== Locate toolchain environment for build ====="
+              ENV_FILE="$(find /home /opt -type f \( -name 'bcm-hnd-ax-4.19.sh' -o -name '*hnd*4.19*.sh' -o -name '*toolchain*.sh' \) -print -quit 2>/dev/null || true)"
+              if [[ -n "$ENV_FILE" ]]; then
+                echo "Using environment: $ENV_FILE"
+                echo "===== Build as matching non-root user ====="
+                su -s /bin/bash "$BUILD_USER" -c "cd /build/$SDK_DIR && export HOME=\"$BUILD_HOME\" && source '$ENV_FILE' && command -v arm-buildroot-linux-gnueabi-gcc && make '$BUILD_TARGET'"
+              else
+                echo "ERROR: no toolchain environment script found in /home or /opt; cannot safely start build."
+                echo "===== Environment and toolchain directory listing ====="
+                ls -la /home/docker /home/docker/envs /opt/toolchains 2>&1 || true
+                exit 2
+              fi
             '
           STATUS=$?
 
